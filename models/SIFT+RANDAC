@@ -1,0 +1,83 @@
+//特征提取和匹配
+void match(IplImage *img1,IplImage *img2)
+{
+	IplImage *img1_Feat = cvCloneImage(img1);//复制图1，深拷贝，用来画特征点
+    IplImage *img2_Feat = cvCloneImage(img2);//复制图2，深拷贝，用来画特征点
+	
+	struct feature *feat1, *feat2;//feat1：图1的特征点数组，feat2：图2的特征点数组
+	int n1, n2;//n1:图1中的特征点个数，n2：图2中的特征点个数
+    struct feature *feat;//每个特征点
+    struct kd_node *kd_root;//k-d树的树根
+    struct feature **nbrs;//当前特征点的最近邻点数组
+    int matchNum;//经距离比值法筛选后的匹配点对的个数
+    struct feature **inliers;//精RANSAC筛选后的内点数组
+    int n_inliers;//经RANSAC算法筛选后的内点个数,即feat1中具有符合要求的特征点的个数
+	
+	//默认提取的是LOWE格式的SIFT特征点
+    //提取并显示第1幅图片上的特征点
+    n1 = sift_features( img1, &feat1 );//检测图1中的SIFT特征点,n1是图1的特征点个数
+    export_features("feature1.txt",feat1,n1);//将特征向量数据写入到文件
+    draw_features( img1_Feat, feat1, n1 );//画出特征点
+    cvShowImage("img1_Feat",img1_Feat);//显示
+ 
+    //提取并显示第2幅图片上的特征点
+    n2 = sift_features( img2, &feat2 );//检测图2中的SIFT特征点，n2是图2的特征点个数
+    export_features("feature2.txt",feat2,n2);//将特征向量数据写入到文件
+    draw_features( img2_Feat, feat2, n2 );//画出特征点
+    cvShowImage("img2_Feat",img2_Feat);//显示
+	
+    Point pt1,pt2;//连线的两个端点
+    double d0,d1;//feat1中每个特征点到最近邻和次近邻的距离
+    matchNum = 0;//经距离比值法筛选后的匹配点对的个数
+ 
+    //将2幅图片合成1幅图片,上下排列
+    stacked = stack_imgs( img1, img2 );//合成图像，显示经距离比值法筛选后的匹配结果
+    stacked_ransac = stack_imgs( img1, img2 );//合成图像，显示经RANSAC算法筛选后的匹配结果
+ 
+    //根据图2的特征点集feat2建立k-d树，返回k-d树根给kd_root
+    kd_root = kdtree_build( feat2, n2 );
+ 
+    //遍历特征点集feat1，针对feat1中每个特征点feat，选取符合距离比值条件的匹配点，放到feat的fwd_match域中
+    for(int i = 0; i < n1; i++ )
+    {
+        feat = feat1+i;//第i个特征点的指针
+        //在kd_root中搜索目标点feat的2个最近邻点，存放在nbrs中，返回实际找到的近邻点个数
+        int k = kdtree_bbf_knn( kd_root, feat, 2, &nbrs, KDTREE_BBF_MAX_NN_CHKS );
+        if( k == 2 )
+        {
+            d0 = descr_dist_sq( feat, nbrs[0] );//feat与最近邻点的距离的平方
+            d1 = descr_dist_sq( feat, nbrs[1] );//feat与次近邻点的距离的平方
+            //若d0和d1的比值小于阈值NN_SQ_DIST_RATIO_THR，则接受此匹配，否则剔除
+            if( d0 < d1 * NN_SQ_DIST_RATIO_THR )
+            {   //将目标点feat和最近邻点作为匹配点对
+                pt1 = Point( cvRound( feat->x ), cvRound( feat->y ) );//图1中点的坐标
+                pt2 = Point( cvRound( nbrs[0]->x ), cvRound( nbrs[0]->y ) );//图2中点的坐标(feat的最近邻点)
+                pt2.y += img1->height;//由于两幅图是上下排列的，pt2的纵坐标加上图1的高度，作为连线的终点
+                cvLine( stacked, pt1, pt2, CV_RGB(255,0,255), 1, 8, 0 );//画出连线
+                matchNum++;//统计匹配点对的个数
+                feat1[i].fwd_match = nbrs[0];//使点feat的fwd_match域指向其对应的匹配点
+            }
+        }
+        free( nbrs );//释放近邻数组
+    }
+    qDebug()<<tr("经距离比值法筛选后的匹配点对个数：")<<matchNum<<endl;
+    //显示并保存经距离比值法筛选后的匹配图
+    cvNamedWindow(IMG_MATCH1);//创建窗口
+    cvShowImage(IMG_MATCH1,stacked);//显示
+ 
+    //利用RANSAC算法筛选匹配点,计算变换矩阵H
+    CvMat * H = ransac_xform(feat1,n1,FEATURE_FWD_MATCH,lsq_homog,4,0.01,homog_xfer_err,3.0,&inliers,&n_inliers);
+    qDebug()<<tr("经RANSAC算法筛选后的匹配点对个数：")<<n_inliers<<endl;
+    //遍历经RANSAC算法筛选后的特征点集合inliers，找到每个特征点的匹配点，画出连线
+    for(int i=0; i<n_inliers; i++)
+    {
+        feat = inliers[i];//第i个特征点
+        pt1 = Point(cvRound(feat->x), cvRound(feat->y));//图1中点的坐标
+        pt2 = Point(cvRound(feat->fwd_match->x), cvRound(feat->fwd_match->y));//图2中点的坐标(feat的匹配点)
+        qDebug()<<"("<<pt1.x<<","<<pt1.y<<")--->("<<pt2.x<<","<<pt2.y<<")"<<endl;
+        pt2.y += img1->height;//由于两幅图是上下排列的，pt2的纵坐标加上图1的高度，作为连线的终点
+        cvLine(stacked_ransac,pt1,pt2,CV_RGB(255,0,255),1,8,0);//画出连线
+    }
+    cvNamedWindow(IMG_MATCH2);//创建窗口
+    cvShowImage(IMG_MATCH2,stacked_ransac);//显示
+}
